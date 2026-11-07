@@ -14,6 +14,9 @@ set -euo pipefail
 BRANCH=sidebar-projects
 PKG=claude-desktop-extra
 TOOLS="${CLAUDE_BUILD_TOOLS:-$HOME/.local/share/claude-desktop-extra-build-tools}"
+# Merkt sich, welcher Commit zuletzt gebaut und installiert wurde; die Update-App
+# erkennt daran eigene Aenderungen, die noch nicht installiert sind.
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-desktop-extra"
 
 INSTALL=false
 SKIP_TESTS=false
@@ -80,6 +83,8 @@ echo ">> Baue die neueste offizielle Version mit allen Patches"
 rm -f build/"$PKG"-*.pkg.tar.zst
 if [ "$INSTALL" = true ]; then
     ./scripts/build-local.sh --pkgrel "$PKGREL" --install
+    mkdir -p "$STATE_DIR"
+    git rev-parse HEAD > "$STATE_DIR/last-built-commit"
     echo ">> Fertig. Claude Desktop neu starten."
 else
     ./scripts/build-local.sh --pkgrel "$PKGREL"

@@ -8,13 +8,15 @@ es geht direkt an sudo und nie durch diese App.
 
     claude-desktop-update-gui.py [--skip-tests] [--force]
 
-Zuerst wird geprueft (ohne Passwort), ob das Original ein neueres Release hat als das
-installierte Paket: derselbe Vergleich wie beim Hinweis "Update verfuegbar" in Claude
-Desktop. Nur wenn ja, kommt die Passwortabfrage und der Bau. --force baut auch ohne
-neue Version.
+Zuerst wird geprueft (ohne Passwort), ob es etwas zu installieren gibt: ein neueres
+Release beim Original als das installierte Paket (derselbe Vergleich wie beim Hinweis
+"Update verfuegbar" in Claude Desktop) ODER eigene Commits, die seit dem letzten
+installierten Bau dazugekommen sind und etwas am Paket aendern (Doku, Tests und die
+Update-Werkzeuge selbst zaehlen nicht). Nur dann kommt die Passwortabfrage und der Bau.
+--force baut auch ohne beides.
 
-Nur fuer Tests ersetzen CDU_CHECK_CMD, CDU_INSTALLED_TAG, CDU_AUTH_CMD, CDU_UPDATE_CMD,
-CDU_INSTALL_CMD und CDU_CLAUDE_CMD die Befehle bzw. den installierten Stempel
+Nur fuer Tests ersetzen CDU_CHECK_CMD, CDU_INSTALLED_TAG, CDU_STATE_FILE, CDU_AUTH_CMD,
+CDU_UPDATE_CMD, CDU_INSTALL_CMD und CDU_CLAUDE_CMD die Befehle bzw. Staende
 (Shell-Zeile, per shlex zerlegt; beim Installbefehl wird der Paketpfad angehaengt).
 """
 import json
@@ -46,6 +48,15 @@ PKG_LINE = re.compile(r"^\s*sudo pacman -U (\S+\.pkg\.tar\.zst)\s*$")
 TAG_LINE = re.compile(r"refs/tags/v(\d+)\.(\d+)\.(\d+)(?:-(\d+))?\s*$")
 TAG_TEXT = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-(\d+))?$")
 RELEASE_JSON = Path("/usr/lib/claude-desktop/resources/cdb-release.json")
+# Commit, der zuletzt gebaut und installiert wurde (schreibt diese App und update-mine.sh --install).
+STATE_FILE = Path(os.environ.get("CDU_STATE_FILE")
+                  or Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
+                  / "claude-desktop-extra" / "last-built-commit")
+# Alles, was NICHT ins Paket eingeht: Aenderungen daran sind kein Grund fuer einen neuen Bau.
+NOT_IN_PACKAGE = ["docs", "site", "baseline", "contrib", ".claude", ".github", ".githooks",
+                  "CHANGELOG.md", "README.md", "AGENTS.md", "SPEC.md", "LICENSE", "scripts/tests",
+                  "scripts/update-mine.sh", "scripts/update-askpass.sh",
+                  "scripts/claude-desktop-update-gui.py"]
 
 # (Muster, Prozent, Text): die Phasen des Baus in ihrer Reihenfolge. Der Balken
 # springt nie zurueck und kriecht innerhalb einer Phase langsam auf die naechste zu.
@@ -140,6 +151,25 @@ def installed_key():
     return tag_key(m) if m else None
 
 
+def own_changes():
+    """Zahl der Commits seit dem letzten Bau, die etwas am Paket aendern; None = unbekannt."""
+    try:
+        last = STATE_FILE.read_text().strip()
+    except OSError:
+        return None
+    r = subprocess.run(["git", "rev-list", "--count", last + "..HEAD", "--", "."]
+                       + [":(exclude)" + p for p in NOT_IN_PACKAGE],
+                       cwd=REPO, capture_output=True, text=True)
+    if r.returncode != 0 or not r.stdout.strip().isdigit():
+        return None  # z.B. der Commit existiert nach einem Rebase nicht mehr: lieber nichts behaupten
+    return int(r.stdout.strip())
+
+
+def git_head():
+    r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
 class Updater(QWidget):
     def __init__(self, skip_tests, force=False):
         super().__init__()
@@ -149,6 +179,7 @@ class Updater(QWidget):
         self.state = "check"         # check | uptodate | auth | update | install | done | error
         self.tags = []
         self.found = ""
+        self.built_head = ""
         self.pkg_path = None
         self._buf = ""
         self.proc = None
@@ -281,12 +312,16 @@ class Updater(QWidget):
                        retry=self.start_check, details=True)
             return
         latest, mine = max(self.tags), installed_key()
-        if mine is not None and latest <= mine:
-            self._uptodate(latest, mine)
-            return
-        self.found = "Neue Version gefunden: %s" % tag_text(latest)
-        if mine is not None:
-            self.found += " (installiert: %s)" % tag_text(mine)
+        if mine is None or latest > mine:
+            self.found = "Neue Version gefunden: %s" % tag_text(latest)
+            if mine is not None:
+                self.found += " (installiert: %s)" % tag_text(mine)
+        else:
+            n = own_changes()
+            if not n:
+                self._uptodate(latest, mine)
+                return
+            self.found = "Eigene Änderungen noch nicht installiert (%d Commit%s)" % (n, "" if n == 1 else "s")
         self.start_auth()
 
     def _uptodate(self, latest, mine):
@@ -354,6 +389,7 @@ class Updater(QWidget):
         if not self.pkg_path or not Path(self.pkg_path).exists():
             self._fail("Das Paket wurde nicht gefunden.", details=True)
             return
+        self.built_head = git_head()  # nach dem Merge des Skripts: genau der Stand, der gebaut wurde
         self.progress.jump(PCT_BUILT, "Paket gebaut …")
         self.start_install()
 
@@ -376,6 +412,12 @@ class Updater(QWidget):
             self._fail("Die Installation ist fehlgeschlagen. Unter „Details“ steht der Grund.", details=True)
             return
         self._drop_sudo()
+        if self.built_head:
+            try:
+                STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+                STATE_FILE.write_text(self.built_head + "\n")
+            except OSError:
+                pass  # schlimmstenfalls bietet die App einmal zu viel einen Neubau an
         self.state = "done"
         self.progress.jump(100, "")
         version = self._installed_version()
