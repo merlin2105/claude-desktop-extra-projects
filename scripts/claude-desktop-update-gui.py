@@ -6,12 +6,18 @@ Baut die neueste offizielle Claude-Desktop-Version mit allen eigenen Aenderungen
 Das sudo-Passwort fragt ein KDE-Dialog ab (scripts/update-askpass.sh, SUDO_ASKPASS):
 es geht direkt an sudo und nie durch diese App.
 
-    claude-desktop-update-gui.py [--skip-tests]
+    claude-desktop-update-gui.py [--skip-tests] [--force]
 
-Nur fuer Tests ersetzen CDU_AUTH_CMD, CDU_UPDATE_CMD, CDU_INSTALL_CMD und
-CDU_CLAUDE_CMD die Befehle (Shell-Zeile, per shlex zerlegt; beim Installbefehl wird
-der Paketpfad angehaengt).
+Zuerst wird geprueft (ohne Passwort), ob das Original ein neueres Release hat als das
+installierte Paket: derselbe Vergleich wie beim Hinweis "Update verfuegbar" in Claude
+Desktop. Nur wenn ja, kommt die Passwortabfrage und der Bau. --force baut auch ohne
+neue Version.
+
+Nur fuer Tests ersetzen CDU_CHECK_CMD, CDU_INSTALLED_TAG, CDU_AUTH_CMD, CDU_UPDATE_CMD,
+CDU_INSTALL_CMD und CDU_CLAUDE_CMD die Befehle bzw. den installierten Stempel
+(Shell-Zeile, per shlex zerlegt; beim Installbefehl wird der Paketpfad angehaengt).
 """
+import json
 import os
 import re
 import shlex
@@ -37,6 +43,9 @@ CLAUDE_PROC = r"^/usr/lib/claude-desktop/claude( |$)"
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 TEST_LINE = re.compile(r"^\s*(PASS|SKIP|FAIL)\s+tests/")
 PKG_LINE = re.compile(r"^\s*sudo pacman -U (\S+\.pkg\.tar\.zst)\s*$")
+TAG_LINE = re.compile(r"refs/tags/v(\d+)\.(\d+)\.(\d+)(?:-(\d+))?\s*$")
+TAG_TEXT = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-(\d+))?$")
+RELEASE_JSON = Path("/usr/lib/claude-desktop/resources/cdb-release.json")
 
 # (Muster, Prozent, Text): die Phasen des Baus in ihrer Reihenfolge. Der Balken
 # springt nie zurueck und kriecht innerhalb einer Phase langsam auf die naechste zu.
@@ -109,12 +118,37 @@ def env_cmd(name, default):
     return shlex.split(raw) if raw else default
 
 
+def tag_key(m):
+    """Release-Tag v<X>.<Y>.<Z>[-<N>] als Vergleichsschluessel; N fehlt = 1 (wie in Claude Desktop)."""
+    x, y, z, n = m.groups()
+    return (int(x), int(y), int(z), int(n) if n else 1)
+
+
+def tag_text(key):
+    x, y, z, n = key
+    return "v%d.%d.%d%s" % (x, y, z, "" if n == 1 else "-%d" % n)
+
+
+def installed_key():
+    """Stempel des installierten Pakets, den auch der Hinweis in Claude Desktop vergleicht."""
+    try:
+        tag = os.environ.get("CDU_INSTALLED_TAG") or json.loads(RELEASE_JSON.read_text())["tag"]
+    except (OSError, ValueError, KeyError):
+        parts = subprocess.run(["pacman", "-Q", PKG], capture_output=True, text=True).stdout.split()
+        tag = "v" + parts[1] if len(parts) == 2 else ""
+    m = TAG_TEXT.match(tag)
+    return tag_key(m) if m else None
+
+
 class Updater(QWidget):
-    def __init__(self, skip_tests):
+    def __init__(self, skip_tests, force=False):
         super().__init__()
         self.skip_tests = skip_tests
+        self.force = force
         self.progress = Progress()
-        self.state = "auth"          # auth | update | install | done | error
+        self.state = "check"         # check | uptodate | auth | update | install | done | error
+        self.tags = []
+        self.found = ""
         self.pkg_path = None
         self._buf = ""
         self.proc = None
@@ -165,12 +199,12 @@ class Updater(QWidget):
         self.keepalive.timeout.connect(self._keepalive)
 
         self._render()
-        QTimer.singleShot(0, self.start_auth)
+        QTimer.singleShot(0, self.start_auth if force else self.start_check)
 
     # ---- Anzeige ----------------------------------------------------------
     def _render(self):
         self.bar.setValue(int(self.progress.pct))
-        if self.state != "done" and self.state != "error":
+        if self.state not in ("done", "error", "uptodate"):
             self.sub.setText(self.progress.text)
 
     def _tick(self):
@@ -223,10 +257,60 @@ class Updater(QWidget):
                 p.terminate()
             p.waitForFinished(3000)
 
+    # ---- 0. Gibt es eine neue Version? (ohne Passwort) --------------------
+    def start_check(self):
+        self.state = "check"
+        self.tags = []
+        self.title.setText("Claude Desktop Update")
+        self.sub.setStyleSheet("")
+        self.bar.setRange(0, 0)  # unbestimmt: es dauert nur eine Sekunde
+        self.progress.jump(0, "Prüfe, ob es eine neue Version gibt …")
+        self._render()
+        argv = env_cmd("CDU_CHECK_CMD", ["git", "ls-remote", "--tags", "--refs", "upstream"])
+        self._run(argv, self._check_line, self._check_done)
+
+    def _check_line(self, ln):
+        m = TAG_LINE.search(ln)
+        if m:
+            self.tags.append(tag_key(m))
+
+    def _check_done(self, code):
+        self.bar.setRange(0, 100)
+        if code != 0 or not self.tags:
+            self._fail("Konnte nicht prüfen, ob es eine neue Version gibt (kein Internet?).",
+                       retry=self.start_check, details=True)
+            return
+        latest, mine = max(self.tags), installed_key()
+        if mine is not None and latest <= mine:
+            self._uptodate(latest, mine)
+            return
+        self.found = "Neue Version gefunden: %s" % tag_text(latest)
+        if mine is not None:
+            self.found += " (installiert: %s)" % tag_text(mine)
+        self.start_auth()
+
+    def _uptodate(self, latest, mine):
+        self.state = "uptodate"
+        self.bar.setVisible(False)
+        self.title.setText("Alles aktuell")
+        self.sub.setText("Installiert: %s – neueste Version beim Original: %s. "
+                         "Es gibt nichts zu aktualisieren." % (tag_text(mine), tag_text(latest)))
+        self.action_btn.setText("Trotzdem neu bauen")
+        self.action_btn.setToolTip("Baut und installiert das Paket neu, zum Beispiel nach eigenen Änderungen.")
+        self.action_btn.setVisible(True)
+        self.action_btn.clicked.connect(self._force_rebuild)
+
+    def _force_rebuild(self):
+        self.action_btn.setVisible(False)
+        self.action_btn.clicked.disconnect()
+        self.bar.setVisible(True)
+        self.found = ""
+        self.start_auth()
+
     # ---- 1. sudo-Passwort -------------------------------------------------
     def start_auth(self):
         self.state = "auth"
-        self.progress.jump(0, "Bitte das sudo-Passwort eingeben …")
+        self.progress.jump(0, (self.found + " – " if self.found else "") + "Bitte das sudo-Passwort eingeben …")
         self._render()
         argv = env_cmd("CDU_AUTH_CMD", ["sudo", "-A", "-v"])
         self._run(argv, lambda ln: None, self._auth_done, askpass=True)
@@ -372,9 +456,10 @@ class Updater(QWidget):
             if ans != QMessageBox.StandardButton.Yes:
                 ev.ignore()
                 return
-        if self.state in ("auth", "update"):
+        if self.state in ("check", "auth", "update"):
             self._kill_tree()
-            self._drop_sudo()
+            if self.state != "check":
+                self._drop_sudo()
         ev.accept()
 
 
@@ -382,7 +467,8 @@ def main():
     app = QApplication(sys.argv)
     QGuiApplication.setDesktopFileName("claude-desktop-update")
     app.setApplicationName("Claude Desktop Update")
-    w = Updater(skip_tests="--skip-tests" in sys.argv[1:])
+    args = sys.argv[1:]
+    w = Updater(skip_tests="--skip-tests" in args, force="--force" in args)
     w.show()
     sys.exit(app.exec())
 
