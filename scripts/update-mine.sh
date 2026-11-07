@@ -62,13 +62,27 @@ if [ "$SKIP_TESTS" = false ]; then
     bash scripts/run-feature-tests.sh
 fi
 
+# Der Hinweis "Update verfuegbar" der App vergleicht den Stempel dieses Pakets
+# (v<Version>-<pkgrel>) mit dem neuesten Release des Originals. Damit er nach dem
+# Update verschwindet, bekommt das Paket dieselbe Nummer wie der neueste Release des
+# Originals, den wir eingemergt haben - aber nur, wenn dessen Version die ist, die
+# gleich gebaut wird (sonst waere die Nummer eines aelteren Releases irrefuehrend).
+TAG="$(git describe --tags --abbrev=0 --match 'v[0-9]*' upstream/master 2>/dev/null || true)"
+BUILD_VER="$(curl -fsSL --max-time 60 https://downloads.claude.ai/claude-desktop/apt/stable/dists/stable/main/binary-amd64/Packages \
+    | sed -n 's/^Version: //p' | sort -V | tail -1)"
+PKGREL=1
+if [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-([0-9]+))?$ ]] && [ "${BASH_REMATCH[1]}" = "$BUILD_VER" ]; then
+    PKGREL="${BASH_REMATCH[3]:-1}"
+fi
+echo ">> Neuester Release des Originals: ${TAG:-unbekannt}, Anthropic-Version: ${BUILD_VER:-unbekannt}, Paketnummer: $PKGREL"
+
 echo ">> Baue die neueste offizielle Version mit allen Patches"
 rm -f build/"$PKG"-*.pkg.tar.zst
 if [ "$INSTALL" = true ]; then
-    ./scripts/build-local.sh --install
+    ./scripts/build-local.sh --pkgrel "$PKGREL" --install
     echo ">> Fertig. Claude Desktop neu starten."
 else
-    ./scripts/build-local.sh
+    ./scripts/build-local.sh --pkgrel "$PKGREL"
     PKGFILE="$(ls -t "$REPO_DIR"/build/"$PKG"-*.pkg.tar.zst | head -1)"
     echo
     echo ">> Fertig. Installieren mit:"
