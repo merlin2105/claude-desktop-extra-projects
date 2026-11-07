@@ -110,6 +110,10 @@ community/add_feature_panel_tabs: \
 
 community/add_feature_panel_tabs_bridge: ../js/panel_tabs_bridge.js
 
+community/add_feature_sidebar_projects: \
+  ../js/sidebar_projects_main.js \
+  ../js/sidebar_projects_page.js
+
 # No window controls: the patch embeds the synchronous pref reader AND the IPC
 # half via staticRead, so a change to either has to rebuild the binary.
 community/add_feature_window_controls: \

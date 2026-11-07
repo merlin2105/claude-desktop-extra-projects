@@ -1317,6 +1317,33 @@
     });
   }
 
+  // --- sidebar: project headings and indented sessions ----------------------
+  // Ours, applies live, and off by default: it restyles upstream's sidebar, so it
+  // is opt-in and this row is the way to ask for it.
+  function renderSidebarProjectsRow(panel) {
+    return renderToggleRow(panel, {
+      title: "Sidebar projects",
+      note: "Makes the sidebar easier to scan: project headings are larger and in the accent colour, and the sessions under a project are indented. Off gives you the stock sidebar back. Applies live.",
+      keywords: "sidebar project group heading indent session list color font size scroll",
+      ariaLabel: "show larger coloured project headings and indented sessions in the sidebar",
+      read: "sidebarProjectsRead",
+      write: "sidebarProjectsSet",
+      lockFile: "claude-desktop-extra.jsonc",
+      // Opt-in: only an explicit true is on.
+      isOn: function (res) { return res.enabled === true; },
+      describe: function (on) {
+        return on ? "on - project headings stand out" : "off - stock sidebar";
+      },
+      writeArg: function (next) { return next; },
+      toast: function (next) {
+        return next
+          ? "Sidebar projects on - headings are larger and sessions are indented"
+          : "Sidebar projects off - the stock sidebar is back";
+      },
+      errorPrefix: "Could not change sidebar projects: "
+    });
+  }
+
   // --- layout: the Code tab's side-panel tabs -------------------------------
   // Ours, applies live, and off by default: it reshapes how Anthropic's own tile
   // layout is presented, so it is opt-in and this row is the way to ask for it.
@@ -3605,6 +3632,7 @@
   var FEATURE_GROUPS = [
     { title: "Code", sub: "Code tab: panels, files, diffs and sessions", items: [
       renderPanelTabsRow,
+      renderSidebarProjectsRow,
       renderFilesQuickOpenRow,
       renderDiffViewsRow,
       renderTranscriptLimitsRow,

@@ -168,6 +168,16 @@
       return ipcRenderer.invoke("cdb-tabs:pref-set", enabled === true);
     },
 
+    // Sidebar projects (larger, coloured project headings and indented sessions).
+    // BOTH channels are owned by patches/community/add_feature_sidebar_projects.nim,
+    // not by the settings patch - the same cross-patch arrangement as panelTabsRead/Set.
+    sidebarProjectsRead: function () {
+      return ipcRenderer.invoke("cdb-sidebar:pref-read");
+    },
+    sidebarProjectsSet: function (enabled) {
+      return ipcRenderer.invoke("cdb-sidebar:pref-set", enabled === true);
+    },
+
     // Files quick open (Ctrl+P over the Code tab's Files panel). BOTH channels are
     // owned by patches/community/add_feature_files_quick_open.nim, not by the
     // settings patch - the same cross-patch arrangement as panelTabsRead/Set.
