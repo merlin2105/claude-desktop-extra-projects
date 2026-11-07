@@ -9,6 +9,11 @@
  * `group/section` and `group/labelrow` classes, the --df-group-font variable),
  * measured on 4.23118.0 with the diagnostic dump below.
  *
+ * PINNED PROJECTS: the same switch also starts js/sidebar_projects_pins.js in the
+ * page (a "Pin" entry in the project context menu, pinned projects first, a
+ * divider that hides the rest). Its stylesheet rules ride along in CSS below, and
+ * the page asks this module for a real Escape key to close the context menu.
+ *
  * DIAGNOSTIC (CLAUDE_SIDEBAR_DUMP=1): additionally injects the page script
  * (js/sidebar_projects_page.js) and polls its dump() every few seconds, writing
  * a text-free structural snapshot of the sidebar to
@@ -57,7 +62,25 @@
     ".dframe-sidebar .df-session-list [class~=\"group/labelrow\"] h3 button:hover span{" +
       "color:var(--cds-text-primary,currentColor)}" +
     ".dframe-sidebar .df-session-list [class~=\"group/section\"] .relative.df-drag-shiftable{" +
-      "margin-inline-start:14px}";
+      "margin-inline-start:14px}" +
+    // Pinned projects (js/sidebar_projects_pins.js): the project column becomes a
+    // flex column so `order` can float pinned blocks above the rest; the divider
+    // is the page script's own element, and the collapsed attribute hides every
+    // block that is not pinned.
+    ".dframe-sidebar [data-testid=\"sidebar-recents\"][data-cdb-pins]{" +
+      "display:flex;flex-direction:column}" +
+    ".dframe-sidebar [data-testid=\"sidebar-recents\"][data-cdb-collapsed] > " +
+      ".df-sortable-section:not([data-cdb-pinned]){display:none}" +
+    ".dframe-sidebar .cdb-pin-divider{display:flex;align-items:center;gap:8px;" +
+      "margin:10px 6px 6px;cursor:pointer;user-select:none;font-size:12px;" +
+      "color:var(--cds-fill-accent,#e0a85a)}" +
+    ".dframe-sidebar .cdb-pin-line{flex:1;height:2px;border-radius:1px;" +
+      "background:currentColor;opacity:.7}" +
+    ".dframe-sidebar .cdb-pin-divider:hover .cdb-pin-line," +
+    ".dframe-sidebar .cdb-pin-divider:focus-visible .cdb-pin-line{opacity:1}" +
+    ".dframe-sidebar .cdb-pin-chevron{display:inline-block;transition:transform .15s}" +
+    ".dframe-sidebar .cdb-pin-divider[aria-expanded=\"false\"] .cdb-pin-chevron{" +
+      "transform:rotate(-90deg)}";
 
   // __cdbDiag (claude-patches.log) is defined inside upstream's app "ready"
   // handler, which runs after this IIFE, and console.log is discarded by the
@@ -185,11 +208,16 @@
   }
 
   // ---- the stylesheet, applied and removed live -------------------------------
+  // The stylesheet and the pinned-projects page script go in and out together;
+  // the script is idempotent, so injecting it again on every dom-ready is safe.
   var cssKeys = {};
+  var START_PINS = "window.__cdbSidebarPins && window.__cdbSidebarPins.start()";
+  var STOP_PINS = "window.__cdbSidebarPins && window.__cdbSidebarPins.stop()";
   function applyCss(wc) {
     try {
       if (wc.isDestroyed() || !injectHost(wc.getURL())) return;
       wc.insertCSS(CSS).then(function (key) { cssKeys[wc.id] = key; }, function () {});
+      wc.executeJavaScript(PAGE_SRC + "\n;" + START_PINS).catch(function () {});
     } catch (e) {}
   }
   function removeCss(wc) {
@@ -197,6 +225,25 @@
       var key = cssKeys[wc.id];
       delete cssKeys[wc.id];
       if (key && !wc.isDestroyed()) wc.removeCSS(key).catch(function () {});
+      if (!wc.isDestroyed() && injectHost(wc.getURL())) wc.executeJavaScript(STOP_PINS).catch(function () {});
+    } catch (e) {}
+  }
+
+  // A page cannot close upstream's context menu (synthetic Escape and outside
+  // clicks are ignored), so the pin entry asks for a real Escape through the
+  // console. Only this exact message is honoured, only for claude.ai pages while
+  // the feature is on, and at most one Escape per 200 ms: the worst a page can do
+  // with it is close a menu.
+  var CLOSE_MSG = "__cdb-sidebar:close-menu";
+  var lastClose = 0;
+  function closeMenu(wc) {
+    try {
+      var now = Date.now();
+      if (now - lastClose < 200) return;
+      if (wc.isDestroyed() || !injectHost(wc.getURL()) || readPrefFromDisk().value !== true) return;
+      lastClose = now;
+      wc.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
+      wc.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
     } catch (e) {}
   }
   function eachPage(fn) {
@@ -252,6 +299,12 @@
   }
 
   _app.on("web-contents-created", function (_ev, wc) {
+    // Electron >= 35 passes one event object ({ message, level, ... }); older
+    // versions pass (event, level, message, line, sourceId).
+    wc.on("console-message", function (ev, level, message) {
+      var msg = (ev && typeof ev.message === "string") ? ev.message : message;
+      if (msg === CLOSE_MSG) closeMenu(wc);
+    });
     wc.on("dom-ready", function () {
       try {
         if (!injectHost((wc.getURL && wc.getURL()) || "")) return;

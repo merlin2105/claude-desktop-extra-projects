@@ -24,13 +24,14 @@ const ok = (c, n) => { if (c) { pass++; console.log("  ok   " + n); }
 function fakePage(id, url) {
   const listeners = {};
   const page = {
-    id, inserted: [], removed: [], executed: [],
+    id, inserted: [], removed: [], executed: [], sent: [],
     getURL: () => url, isDestroyed: () => false,
     insertCSS: async (css) => { page.inserted.push(css); return "key-" + id + "-" + page.inserted.length; },
     removeCSS: async (key) => { page.removed.push(key); },
     executeJavaScript: async (src) => { page.executed.push(src); return null; },
+    sendInputEvent: (e) => { page.sent.push(e); },
     on: (ev, fn) => { listeners[ev] = fn; },
-    fire: (ev) => listeners[ev] && listeners[ev]()
+    fire: (ev, ...args) => listeners[ev] && listeners[ev](...args)
   };
   return page;
 }
@@ -50,8 +51,11 @@ function load(profileDir, pages, { platform = "linux", env = {} } = {}) {
     ipcMain: { handle: (ch, fn) => { handlers[ch] = fn; } },
     webContents: { getAllWebContents: () => pages }
   };
+  // The patch embeds both page scripts as one string; do the same here.
+  const pageSrc = readFileSync(join(ROOT, "js/sidebar_projects_page.js"), "utf8") + "\n;\n" +
+    readFileSync(join(ROOT, "js/sidebar_projects_pins.js"), "utf8");
   const src = readFileSync(join(ROOT, "js/sidebar_projects_main.js"), "utf8")
-    .replace('"__CDB_SIDEBAR_PAGE_SRC__"', '"/*page*/"');
+    .replace('"__CDB_SIDEBAR_PAGE_SRC__"', () => JSON.stringify(pageSrc));
   const sandbox = { require: (m) => (m === "electron" ? electron : Module.createRequire(import.meta.url)(m)),
     process: { platform, env }, console, globalThis: {}, setTimeout };
   sandbox.globalThis = sandbox;
@@ -135,7 +139,61 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
   const foreign = fakePage(5, "https://evil.example/?next=claude.ai");
   created({}, foreign); foreign.fire("dom-ready"); await tick();
   ok(foreign.inserted.length === 0, "a URL that merely contains \"claude.ai\" is not treated as claude.ai");
-  ok(onPage.executed.length === 0, "no page script is injected without CLAUDE_SIDEBAR_DUMP");
+  ok(offPage.executed.length === 0, "no page script is injected while the pref is off and no dump is requested");
+  ok(onPage.executed.some((s) => /__cdbSidebarPins\.start\(\)/.test(s)),
+     "with the pref on, dom-ready injects the pinned-projects script and starts it");
+  ok(onPage.executed.some((s) => /window\.__cdbSidebarPins = /.test(s)),
+     "the injected source carries the pinned-projects module");
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// ---- pinned projects follow the switch live ---------------------------------
+{
+  const dir = mkdtempSync(join(tmpdir(), "cdb-sidebar-main-"));
+  const page = fakePage(7, "https://claude.ai/epitaxy");
+  const other = fakePage(8, "https://example.com/");
+  const h = load(dir, [page, other]);
+  await h["cdb-sidebar:pref-set"](okSenderEv, true);
+  await tick();
+  ok(page.executed.some((s) => /__cdbSidebarPins\.start\(\)/.test(s)), "turning the switch on starts the pin script live");
+  await h["cdb-sidebar:pref-set"](okSenderEv, false);
+  await tick();
+  ok(page.executed.some((s) => s.trim() === "window.__cdbSidebarPins && window.__cdbSidebarPins.stop()"),
+     "turning the switch off stops the pin script live");
+  ok(other.executed.length === 0, "a page outside claude.ai never gets the script, on or off");
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// ---- the context-menu close channel -----------------------------------------
+{
+  const dir = mkdtempSync(join(tmpdir(), "cdb-sidebar-main-"));
+  const h = load(dir, []);
+  const created = appListeners["web-contents-created"][0];
+  const page = fakePage(9, "https://claude.ai/epitaxy");
+  created({}, page);
+  page.fire("console-message", { message: "__cdb-sidebar:close-menu", level: 0 });
+  ok(page.sent.length === 0, "the close request is ignored while the pref is off");
+
+  await h["cdb-sidebar:pref-set"](okSenderEv, true);
+  page.fire("console-message", { message: "something else", level: 0 });
+  ok(page.sent.length === 0, "any other console message does nothing");
+  page.fire("console-message", { message: "__cdb-sidebar:close-menu", level: 0 });
+  ok(page.sent.length === 2 && page.sent[0].type === "keyDown" && page.sent[0].keyCode === "Escape" &&
+     page.sent[1].type === "keyUp", "the close request sends a real Escape key down and up");
+  page.fire("console-message", { message: "__cdb-sidebar:close-menu", level: 0 });
+  ok(page.sent.length === 2, "a second request within 200 ms is dropped (rate limit)");
+
+  await new Promise((r) => setTimeout(r, 230));
+  const legacy = fakePage(10, "https://claude.ai/epitaxy");
+  created({}, legacy);
+  legacy.fire("console-message", {}, 0, "__cdb-sidebar:close-menu", 1, "src");
+  ok(legacy.sent.length === 2, "the legacy (event, level, message) signature is understood too");
+
+  await new Promise((r) => setTimeout(r, 230));
+  const foreign = fakePage(11, "https://evil.example/");
+  created({}, foreign);
+  foreign.fire("console-message", { message: "__cdb-sidebar:close-menu", level: 0 });
+  ok(foreign.sent.length === 0, "a page outside claude.ai cannot request the key press");
   rmSync(dir, { recursive: true, force: true });
 }
 

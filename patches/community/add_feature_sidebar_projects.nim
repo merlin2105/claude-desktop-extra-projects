@@ -18,7 +18,8 @@
 import std/[os, strutils]
 
 const MAIN_JS = staticRead("../../js/sidebar_projects_main.js")
-const PAGE_JS = staticRead("../../js/sidebar_projects_page.js")
+const DUMP_JS = staticRead("../../js/sidebar_projects_page.js")
+const PINS_JS = staticRead("../../js/sidebar_projects_pins.js")
 
 const MARKER = "__CDB_SIDEBAR_PROJECTS__"
 const PLACEHOLDER = "\"__CDB_SIDEBAR_PAGE_SRC__\""
@@ -33,7 +34,10 @@ proc escapeJs(s: string): string =
 proc buildInjection(): string =
   if PLACEHOLDER notin MAIN_JS:
     raise newException(ValueError, "sidebar_projects_main.js lost its page-src placeholder")
-  MAIN_JS.replace(PLACEHOLDER, "\"" & escapeJs(PAGE_JS) & "\"")
+  # Both page scripts are evaluated as ONE string; each defines its own global
+  # and is idempotent, so the order does not matter.
+  let pageSrc = DUMP_JS & "\n;\n" & PINS_JS
+  MAIN_JS.replace(PLACEHOLDER, "\"" & escapeJs(pageSrc) & "\"")
 
 proc apply*(input: string): string =
   result = input

@@ -7,6 +7,7 @@ All notable changes to the claude-desktop-extra packages will be documented in t
 ### Sidebar projects: readable project and session hierarchy
 
 - New opt-in switch in Settings -> Extra -> Community Features -> **Sidebar projects**. Project headings in the sidebar get a larger font and the accent colour, and the sessions under a project are indented, so a long list of projects with expanded sessions stays scannable. Off (the default) leaves the stock sidebar untouched; it applies live, no restart.
+- **Pin projects:** right-click a project heading and choose **Pin** (**Unpin** for a pinned one). Pinned projects are listed first, in the order of the sidebar; a coloured divider separates them from the rest, and clicking the divider hides or shows all projects below it. The pin list and the hidden/shown state are remembered across restarts. Upstream's own move up / down and drag sorting keep working on the underlying order.
 - `CLAUDE_SIDEBAR_DUMP=1` writes a text-free structural snapshot of the sidebar to the profile directory, to re-derive the selectors if upstream redesigns the sidebar.
 
 ## 2026-11-06

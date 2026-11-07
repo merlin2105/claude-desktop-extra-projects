@@ -1323,8 +1323,8 @@
   function renderSidebarProjectsRow(panel) {
     return renderToggleRow(panel, {
       title: "Sidebar projects",
-      note: "Makes the sidebar easier to scan: project headings are larger and in the accent colour, and the sessions under a project are indented. Off gives you the stock sidebar back. Applies live.",
-      keywords: "sidebar project group heading indent session list color font size scroll",
+      note: "Makes the sidebar easier to scan: project headings are larger and in the accent colour, and the sessions under a project are indented. Right-click a project to pin it to the top; a divider separates pinned projects from the rest, and clicking the divider hides or shows the rest. Off gives you the stock sidebar back. Applies live.",
+      keywords: "sidebar project group heading indent session list color font size scroll pin pinned divider hide",
       ariaLabel: "show larger coloured project headings and indented sessions in the sidebar",
       read: "sidebarProjectsRead",
       write: "sidebarProjectsSet",
